@@ -35,7 +35,12 @@ $course = get_course($courseid);
 require_login($course);
 require_capability('block/mappingtracker:view', context_course::instance($courseid));
 
-$units = coverage::for_course($courseid, coverage::counted_courses($courseid));
+$config = coverage::block_config($courseid);
+$units = coverage::for_course(
+    $courseid,
+    coverage::counted_courses($courseid, $config),
+    coverage::search_categories($courseid, $config)
+);
 if (!isset($units[$unitid])) {
     throw new moodle_exception('invalidrecord', 'error', '', 'competency');
 }

@@ -39,6 +39,11 @@ class coverage {
     /** Status: no target (counts shown for information). */
     public const NOTARGET = 'notarget';
 
+    /** Search setting: this course's category. */
+    public const SEARCH_OWN_CATEGORY = 0;
+    /** Search setting: anywhere on the site. */
+    public const SEARCH_ANYWHERE = -1;
+
     /** Words for numbers in "at least two". */
     private const NUMBERS = ['one' => 1, 'two' => 2, 'three' => 3, 'four' => 4, 'five' => 5, 'six' => 6, 'seven' => 7,
         'eight' => 8, 'nine' => 9, 'ten' => 10];
@@ -48,9 +53,11 @@ class coverage {
      *
      * @param int $courseid
      * @param int[] $countcourseids Other courses whose mapping counts towards targets here
+     * @param int[]|null $categoryids Only look for mapping in other courses in these categories (null: anywhere).
+     *     Courses chosen to count are always included.
      * @return \stdClass[] unitid => unit: competency, framework, nodes (in tree order), totals
      */
-    public static function for_course(int $courseid, array $countcourseids = []): array {
+    public static function for_course(int $courseid, array $countcourseids = [], ?array $categoryids = null): array {
         global $DB;
         $coursecomps = $DB->get_fieldset_select('competency_coursecomp', 'competencyid', 'courseid = ?', [$courseid]);
         if (!$coursecomps) {
@@ -136,7 +143,7 @@ class coverage {
                         }
                         continue;
                     }
-                    $othercourses[$cid] ??= self::other_course($cid);
+                    $othercourses[$cid] ??= self::other_course($cid, isset($countcourses[$cid]) ? null : $categoryids);
                     if (!$othercourses[$cid]) {
                         continue;
                     }
@@ -248,12 +255,13 @@ class coverage {
      * Other courses that link competencies from the same units, for choosing which ones count.
      *
      * @param int $courseid
+     * @param int[]|null $categoryids Only courses in these categories (null: anywhere)
      * @return array courseid => course name
      */
-    public static function sharing_courses(int $courseid): array {
+    public static function sharing_courses(int $courseid, ?array $categoryids = null): array {
         global $DB;
         $courses = [];
-        $units = self::for_course($courseid);
+        $units = self::for_course($courseid, [], $categoryids);
         foreach ($units as $unit) {
             foreach ($unit->nodes as $node) {
                 foreach ($node->elsewhere as $other) {
@@ -276,7 +284,7 @@ class coverage {
             $sql .= ') AND cc.courseid <> ?';
             $params[] = $courseid;
             foreach ($DB->get_fieldset_sql($sql, $params) as $cid) {
-                if ($course = self::other_course((int) $cid)) {
+                if ($course = self::other_course((int) $cid, $categoryids)) {
                     $courses[$course->id] = $course->fullname;
                 }
             }
@@ -286,12 +294,12 @@ class coverage {
     }
 
     /**
-     * The courses chosen to count in this course's block.
+     * The settings of this course's block (empty if there's no block).
      *
      * @param int $courseid
-     * @return int[]
+     * @return \stdClass
      */
-    public static function counted_courses(int $courseid): array {
+    public static function block_config(int $courseid): \stdClass {
         global $DB;
         $context = \context_course::instance($courseid);
         $instance = $DB->get_record(
@@ -301,10 +309,52 @@ class coverage {
             IGNORE_MULTIPLE
         );
         if (!$instance || !$instance->configdata) {
-            return [];
+            return new \stdClass();
         }
-        $config = unserialize_object(base64_decode($instance->configdata));
+        return (object) unserialize_object(base64_decode($instance->configdata));
+    }
+
+    /**
+     * The courses chosen to count in this course's block.
+     *
+     * @param int $courseid
+     * @param \stdClass|null $config The block's settings, if already loaded
+     * @return int[]
+     */
+    public static function counted_courses(int $courseid, ?\stdClass $config = null): array {
+        $config ??= self::block_config($courseid);
         return array_map('intval', array_values((array) ($config->countcourses ?? [])));
+    }
+
+    /**
+     * Where to look for mapping in other courses, from the block's settings: by default this course's category and
+     * its subcategories, so older intakes in other categories don't crowd the page.
+     *
+     * @param int $courseid
+     * @param \stdClass|null $config The block's settings, if already loaded
+     * @return int[]|null Category ids, or null for anywhere on the site
+     */
+    public static function search_categories(int $courseid, ?\stdClass $config = null): ?array {
+        global $DB;
+        $config ??= self::block_config($courseid);
+        $category = (int) ($config->searchcategory ?? self::SEARCH_OWN_CATEGORY);
+        if ($category === self::SEARCH_ANYWHERE) {
+            return null;
+        }
+        if ($category === self::SEARCH_OWN_CATEGORY || !$DB->record_exists('course_categories', ['id' => $category])) {
+            $category = (int) $DB->get_field('course', 'category', ['id' => $courseid]);
+        }
+        $ids = [$category];
+        if ((int) ($config->subcategories ?? 1)) {
+            $path = $DB->get_field('course_categories', 'path', ['id' => $category]);
+            $ids = array_merge($ids, array_map('intval', $DB->get_fieldset_select(
+                'course_categories',
+                'id',
+                $DB->sql_like('path', '?'),
+                [$path . '/%']
+            )));
+        }
+        return $ids;
     }
 
     /**
@@ -470,15 +520,20 @@ class coverage {
     }
 
     /**
-     * Another course, unless it's hidden or has ended (old intakes and archived copies).
+     * Another course, unless it's hidden, has ended (old intakes and archived copies) or is outside the categories
+     * being searched.
      *
      * @param int $courseid
+     * @param int[]|null $categoryids Null for anywhere
      * @return \stdClass|null
      */
-    private static function other_course(int $courseid): ?\stdClass {
+    private static function other_course(int $courseid, ?array $categoryids = null): ?\stdClass {
         global $DB;
-        $course = $DB->get_record('course', ['id' => $courseid], 'id, fullname, shortname, visible, enddate');
+        $course = $DB->get_record('course', ['id' => $courseid], 'id, fullname, shortname, category, visible, enddate');
         if (!$course || !$course->visible || ($course->enddate && $course->enddate < time())) {
+            return null;
+        }
+        if ($categoryids !== null && !in_array((int) $course->category, $categoryids, true)) {
             return null;
         }
         $course->fullname = format_string($course->fullname, true, ['context' => \context_course::instance($courseid)]);

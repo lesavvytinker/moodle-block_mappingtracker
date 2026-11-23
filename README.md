@@ -36,10 +36,16 @@ An item's target is, in order:
 
 ## Other courses
 
-Moodle doesn't know which courses make up a qualification, only which courses link which competencies. Mapping in
-other courses that link the same units is always shown; it counts towards targets only for the courses chosen in the
-block's settings (*Count mapping from these courses*), e.g. when one unit is delivered across two courses. Hidden
-courses and courses that have ended are left out.
+Moodle doesn't know which courses make up a qualification, only which courses link which competencies. In the block's
+settings:
+
+- **Look for mapping in**: where to look for the same units in other courses. By default, this course's category and
+  its subcategories, so older intakes kept in their own categories (e.g. *Term 4 2026*) don't crowd the page. Choose
+  a broader category (e.g. *Term 4 2027*, with each qualification as a subcategory) or *Anywhere on the site*.
+- **Count mapping from these courses**: mapping found there is shown, but counts towards targets only for the courses
+  chosen here, e.g. when one unit is delivered across two courses. A chosen course always counts, wherever it is.
+
+Hidden courses and courses that have ended are always left out.
 
 ## Settings
 

@@ -60,8 +60,10 @@ if ($action === 'settarget' && $cansettargets && confirm_sesskey()) {
     );
 }
 
-$countcourses = coverage::counted_courses($courseid);
-$units = \core_competency\api::is_enabled() ? coverage::for_course($courseid, $countcourses) : [];
+$config = coverage::block_config($courseid);
+$countcourses = coverage::counted_courses($courseid, $config);
+$searchcategories = coverage::search_categories($courseid, $config);
+$units = \core_competency\api::is_enabled() ? coverage::for_course($courseid, $countcourses, $searchcategories) : [];
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading(get_string('mapping', 'block_mappingtracker'));
@@ -77,6 +79,12 @@ if (!$units) {
     die;
 }
 
+$searchcategory = (int) ($config->searchcategory ?? coverage::SEARCH_OWN_CATEGORY);
+$where = $searchcategories === null ? get_string('searchanywhere', 'block_mappingtracker')
+    : core_course_category::get($searchcategory > 0 && $DB->record_exists('course_categories', ['id' => $searchcategory])
+        ? $searchcategory : $course->category, MUST_EXIST, true)->get_formatted_name() .
+        ((int) ($config->subcategories ?? 1) ? ' ' . get_string('andsubcategories', 'block_mappingtracker') : '');
+echo html_writer::tag('p', get_string('lookingin', 'block_mappingtracker', $where), ['class' => 'small text-muted mb-1']);
 if ($countcourses) {
     $names = array_map(fn($id) => format_string((string) $DB->get_field('course', 'fullname', ['id' => $id])), $countcourses);
     echo html_writer::tag(

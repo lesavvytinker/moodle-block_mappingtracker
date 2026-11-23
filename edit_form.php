@@ -28,9 +28,41 @@ class block_mappingtracker_edit_form extends block_edit_form {
      * @param MoodleQuickForm $mform
      */
     protected function specific_definition($mform) {
+        global $DB;
         $mform->addElement('header', 'confighdr', get_string('blocksettings', 'block'));
         $courseid = (int) $this->page->course->id;
-        $courses = \block_mappingtracker\local\coverage::sharing_courses($courseid);
+        $coursecategory = core_course_category::get($this->page->course->category, IGNORE_MISSING, true);
+        $options = [
+            \block_mappingtracker\local\coverage::SEARCH_OWN_CATEGORY => get_string(
+                'searchowncategory',
+                'block_mappingtracker',
+                $coursecategory ? $coursecategory->get_formatted_name() : ''
+            ),
+            \block_mappingtracker\local\coverage::SEARCH_ANYWHERE => get_string('searchanywhere', 'block_mappingtracker'),
+        ] + core_course_category::make_categories_list();
+        $mform->addElement('select', 'config_searchcategory', get_string('searchcategory', 'block_mappingtracker'), $options);
+        $mform->setDefault('config_searchcategory', \block_mappingtracker\local\coverage::SEARCH_OWN_CATEGORY);
+        $mform->addHelpButton('config_searchcategory', 'searchcategory', 'block_mappingtracker');
+        $mform->addElement('advcheckbox', 'config_subcategories', '', get_string('searchsubcategories', 'block_mappingtracker'));
+        $mform->setDefault('config_subcategories', 1);
+        $mform->hideIf(
+            'config_subcategories',
+            'config_searchcategory',
+            'eq',
+            \block_mappingtracker\local\coverage::SEARCH_ANYWHERE
+        );
+
+        $config = $this->block->config ?? new stdClass();
+        $courses = \block_mappingtracker\local\coverage::sharing_courses(
+            $courseid,
+            \block_mappingtracker\local\coverage::search_categories($courseid, $config)
+        );
+        // Keep courses already chosen, even if they're outside the categories searched.
+        foreach (\block_mappingtracker\local\coverage::counted_courses($courseid, $config) as $chosen) {
+            if (!isset($courses[$chosen]) && ($name = $DB->get_field('course', 'fullname', ['id' => $chosen]))) {
+                $courses[$chosen] = format_string($name);
+            }
+        }
         if (!$courses) {
             $mform->addElement(
                 'static',

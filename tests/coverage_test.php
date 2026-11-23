@@ -231,4 +231,49 @@ final class coverage_test extends \advanced_testcase {
             'timecreated' => time(), 'timemodified' => time()]);
         $this->assertSame([(int) $d['b']->id], coverage::counted_courses((int) $d['a']->id));
     }
+
+    /**
+     * Looking for mapping only in a category: this course's (and its subcategories) by default, a chosen one, or
+     * anywhere; courses chosen to count are always included.
+     */
+    public function test_search_categories(): void {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $d = $this->setup_data();
+        $term = $this->getDataGenerator()->create_category(['name' => 'Term 4 2027']);
+        $qual = $this->getDataGenerator()->create_category(['name' => 'Cert IV', 'parent' => $term->id]);
+        $old = $this->getDataGenerator()->create_category(['name' => 'Term 4 2026']);
+        move_courses([$d['a']->id], $qual->id);
+        move_courses([$d['b']->id], $old->id);
+        $a = (int) $d['a']->id;
+        $u1 = $d['u1']->get('id');
+        $pc12 = fn(array $countcourses, ?array $categories) => coverage::for_course(
+            $a,
+            $countcourses,
+            $categories
+        )[$u1]->nodes[$d['pc12']->get('id')];
+
+        // Default: this course's category, and B is in last year's category.
+        $default = coverage::search_categories($a);
+        $this->assertSame([(int) $qual->id], $default);
+        $this->assertSame([], $pc12([], $default)->elsewhere);
+        $this->assertSame([], coverage::sharing_courses($a, $default));
+
+        // Anywhere: B shows.
+        $this->assertNull(coverage::search_categories($a, (object) ['searchcategory' => coverage::SEARCH_ANYWHERE]));
+        $this->assertCount(1, $pc12([], null)->elsewhere);
+
+        // A chosen category with its subcategories.
+        move_courses([$d['b']->id], $term->id);
+        $termwide = coverage::search_categories($a, (object) ['searchcategory' => $term->id, 'subcategories' => 1]);
+        $this->assertEqualsCanonicalizing([(int) $term->id, (int) $qual->id], $termwide);
+        $this->assertCount(1, $pc12([], $termwide)->elsewhere);
+        $this->assertSame([(int) $qual->id], coverage::search_categories($a, (object) ['subcategories' => 0]));
+
+        // A course chosen to count is included wherever it is.
+        move_courses([$d['b']->id], $old->id);
+        $counted = $pc12([(int) $d['b']->id], $default);
+        $this->assertTrue($counted->elsewhere[0]->counted);
+        $this->assertSame(coverage::MET, $counted->status);
+    }
 }
