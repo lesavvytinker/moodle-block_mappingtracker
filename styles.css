@@ -1,0 +1,33 @@
+.block_mappingtracker-bar {
+    height: 0.5rem;
+    margin-bottom: 0.25rem;
+}
+
+.block_mappingtracker-gaps li {
+    margin-bottom: 0.25rem;
+}
+
+.block_mappingtracker-badge {
+    min-width: 3.5rem;
+}
+
+.block_mappingtracker-table td {
+    vertical-align: top;
+}
+
+.block_mappingtracker-table tr.block_mappingtracker-missing td:first-child {
+    border-left: 4px solid #ca3120;
+}
+
+.block_mappingtracker-table tr.block_mappingtracker-under td:first-child {
+    border-left: 4px solid #f0ad4e;
+}
+
+.block_mappingtracker-table tr.block_mappingtracker-met td:first-child {
+    border-left: 4px solid #357a32;
+}
+
+.block_mappingtracker-table td:last-child {
+    white-space: nowrap;
+    width: 11rem;
+}

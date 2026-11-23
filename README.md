@@ -1,0 +1,55 @@
+# Mapping tracker (block_mappingtracker)
+
+A Moodle block for the people who build courses. It shows, as you build, how many activities are mapped to each
+item of the units the course delivers (elements, performance criteria, performance evidence, knowledge evidence) and
+whether each item meets its target, so you know the course will collect enough evidence before learners start.
+
+It is the first half of the evidence story: Mapping tracker checks the design; Evidence Reporter
+(`report_evidencereporter`) reports the evidence once learners are assessed. Each works without the other.
+
+## What it shows
+
+- **The block** (course page, staff only): each unit with a bar and "27 of 35 met · 8 not mapped", and its gaps,
+  not-mapped first, each linked to its row on the full page.
+- **Full mapping** (*Open full mapping*): every item of every unit as a tree, with:
+  - the activities mapped to it, as links; hidden activities are labelled
+  - **Shared with…** on activities that also count for another unit (clustered delivery)
+  - **Also mapped in…**: the same item mapped in other courses (an RPL course, a course delivering the rest of a split
+    unit), shown but not counted unless you choose that course
+  - its count against its target ("1 of 2"), and where the target came from
+  - a warning when an item hasn't been added to the course's competencies, so nothing can be mapped to it yet
+- **Mapping matrix export** per unit (CSV, Excel, ODS, HTML, PDF, JSON): items down the side, activities across the
+  top, with counts, targets and status. The mapping document auditors and validators ask for, generated from the
+  course itself.
+
+Moodle links competencies to whole activities, so one instance of mapping is one activity linked to the item.
+
+## Targets
+
+An item's target is, in order:
+
+1. **Set by a manager** on the full mapping page (capability `block/mappingtracker:settargets`, Manager by default).
+   A target belongs to the item, so it applies wherever the unit is delivered. *Reset* goes back to 2 or 3.
+2. **From its wording**: "at least two layouts" gives 2 (setting *Suggest targets from wording*).
+3. **The default** for items with nothing below them (setting *Default target*, 1). Parents (units, elements)
+   summarise their children instead, unless a manager gives them a target.
+
+## Other courses
+
+Moodle doesn't know which courses make up a qualification, only which courses link which competencies. Mapping in
+other courses that link the same units is always shown; it counts towards targets only for the courses chosen in the
+block's settings (*Count mapping from these courses*), e.g. when one unit is delivered across two courses. Hidden
+courses and courses that have ended are left out.
+
+## Settings
+
+*Site administration → Plugins → Blocks → Mapping tracker*: default target, suggest targets from wording, and
+whether hidden activities count (on by default, since courses are usually built with activities hidden).
+
+## Requirements
+
+Moodle 4.5 to 5.2, with competencies enabled.
+
+## Licence
+
+GNU GPL v3 or later. Copyright 2026 Daniel Maloney.
