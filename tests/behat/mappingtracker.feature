@@ -54,3 +54,26 @@ Feature: Track how activities are mapped to a course's competencies
     And I follow "Open full mapping"
     And I should see "Magazine task"
     And "Save" "button" should not exist
+
+  Scenario: A manager sees mapping across a category
+    Given the following "categories" exist:
+      | name   | category | idnumber |
+      | Term 1 | 0        | T1       |
+    And the following "courses" exist:
+      | fullname | shortname | category |
+      | Course 2 | C2        | T1       |
+    And the following "core_competency > course_competencies" exist:
+      | course | competency |
+      | C2     | U2         |
+    And the following "activities" exist:
+      | activity | name             | course | idnumber |
+      | assign   | Typography brief | C2     | T2       |
+    And the following "block_mappingtracker > mappings" exist:
+      | activity | competency |
+      | T2       | U2         |
+    And I log in as "admin"
+    When I am on the "Term 1" "Category" page
+    And I follow "Mapping tracker"
+    Then I should see "Typography unit"
+    And I should see "1 of 1"
+    And I should see "Course 2"

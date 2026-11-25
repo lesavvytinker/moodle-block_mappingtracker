@@ -67,6 +67,9 @@ class display {
         if ($t->missing) {
             $parts[] = get_string('totalsmissing', 'block_mappingtracker', $t->missing);
         }
+        if (!empty($t->warnings)) {
+            $parts[] = get_string('totalswarnings', 'block_mappingtracker', $t->warnings);
+        }
         return implode(' · ', $parts);
     }
 
@@ -121,6 +124,20 @@ class display {
     public static function block(int $courseid, array $units): string {
         $out = '';
         $page = new moodle_url('/blocks/mappingtracker/view.php', ['courseid' => $courseid]);
+        $warnings = array_sum(array_map(fn($u) => $u->totals->warnings ?? 0, $units))
+            + array_sum(array_map(
+                fn($n) => count($n->fixes) + $n->unusedquestions,
+                coverage::questions_outside_units($courseid, $units)
+            ));
+        if ($warnings) {
+            $out .= html_writer::div(
+                html_writer::link(
+                    new moodle_url($page, [], 'fixes'),
+                    get_string('warningsheader', 'block_mappingtracker', $warnings)
+                ),
+                'alert alert-warning py-1 px-2 small block_mappingtracker-warnings'
+            );
+        }
         foreach ($units as $unitid => $unit) {
             $unitout = html_writer::tag('h6', html_writer::link(
                 new moodle_url($page, [], 'unit-' . $unitid),
@@ -129,20 +146,32 @@ class display {
             $unitout .= self::bar($unit);
             $unitout .= html_writer::div(self::totals($unit), 'small text-muted mb-1');
             $gaps = coverage::gaps($unit);
-            if ($gaps) {
-                $items = '';
-                foreach (array_slice($gaps, 0, self::BLOCK_GAPS) as $node) {
-                    $items .= html_writer::tag('li', self::badge($node) . ' ' . html_writer::link(
+            $items = '';
+            foreach (array_slice($gaps, 0, self::BLOCK_GAPS) as $node) {
+                $items .= html_writer::tag('li', self::badge($node) . ' ' . html_writer::link(
+                    new moodle_url($page, [], 'item-' . $node->competency->id),
+                    shorten_text(self::name($node), 60)
+                ));
+            }
+            if (count($gaps) > self::BLOCK_GAPS) {
+                $items .= html_writer::tag('li', html_writer::link(
+                    new moodle_url($page, [], 'unit-' . $unitid),
+                    get_string('andmore', 'block_mappingtracker', count($gaps) - self::BLOCK_GAPS)
+                ), ['class' => 'small']);
+            }
+            // Items with questions to sort out, even when their targets are met.
+            foreach ($unit->nodes as $node) {
+                if ($node->fixes || $node->unusedquestions) {
+                    $items .= html_writer::tag('li', html_writer::span('⚠', 'text-warning') . ' ' . html_writer::link(
                         new moodle_url($page, [], 'item-' . $node->competency->id),
-                        shorten_text(self::name($node), 60)
-                    ));
+                        shorten_text(self::name($node), 50)
+                    ) . ' ' . html_writer::span(get_string(
+                        $node->fixes ? 'flag_notlinkedatquiz' : 'flag_notused',
+                        'block_mappingtracker'
+                    ), 'text-muted'));
                 }
-                if (count($gaps) > self::BLOCK_GAPS) {
-                    $items .= html_writer::tag('li', html_writer::link(
-                        new moodle_url($page, [], 'unit-' . $unitid),
-                        get_string('andmore', 'block_mappingtracker', count($gaps) - self::BLOCK_GAPS)
-                    ), ['class' => 'small']);
-                }
+            }
+            if ($items) {
                 $unitout .= html_writer::tag('ul', $items, ['class' => 'list-unstyled small block_mappingtracker-gaps']);
             } else if ($unit->totals->items) {
                 $unitout .= html_writer::div(get_string('allmet', 'block_mappingtracker'), 'small text-success');
@@ -180,5 +209,67 @@ class display {
             $items .= html_writer::tag('li', $name . $extra);
         }
         return $items ? html_writer::tag('ul', $items, ['class' => 'list-unstyled mb-0']) : '';
+    }
+
+    /**
+     * The questions mapped to an item: supporting evidence, never counted, with what each needs.
+     *
+     * @param \stdClass $node
+     * @return string
+     */
+    public static function questions(\stdClass $node): string {
+        if (empty($node->questions)) {
+            return '';
+        }
+        $items = '';
+        foreach ($node->questions as $question) {
+            $name = $question->previewurl ? html_writer::link($question->previewurl, $question->name, ['target' => '_blank'])
+                : s($question->name);
+            $extra = [];
+            foreach ($question->quizzes as $quiz) {
+                $label = $quiz->url ? html_writer::link($quiz->url, $quiz->name) : s($quiz->name);
+                if (!$quiz->linked) {
+                    $label .= ' ' . html_writer::span(
+                        get_string('flag_notlinkedatquiz', 'block_mappingtracker'),
+                        'badge bg-danger'
+                    );
+                }
+                $extra[] = $label;
+            }
+            $flags = '';
+            if ($question->unused) {
+                $flags .= ' ' . html_writer::span(get_string('flag_notused', 'block_mappingtracker'), 'badge bg-warning text-dark');
+            }
+            if ($question->random) {
+                $flags .= ' ' . html_writer::span(
+                    get_string('flag_random', 'block_mappingtracker'),
+                    'badge bg-info text-dark',
+                    ['title' => get_string('flag_random_help', 'block_mappingtracker')]
+                );
+            }
+            $items .= html_writer::tag('li', '❓ ' . $name . $flags . ($extra ? html_writer::div(
+                get_string('usedin', 'block_mappingtracker', implode(', ', $extra)),
+                'ms-3 ml-3'
+            ) : ''));
+        }
+        return html_writer::div(get_string('questionsheading', 'block_mappingtracker'), 'small text-muted mt-1') .
+            html_writer::tag('ul', $items, ['class' => 'list-unstyled small mb-0 block_mappingtracker-questions']);
+    }
+
+    /**
+     * A button that fixes one flag.
+     *
+     * @param int $courseid
+     * @param \stdClass $node
+     * @param \stdClass $fix From the node's fixes
+     * @return string
+     */
+    public static function fix_button(int $courseid, \stdClass $node, \stdClass $fix): string {
+        $label = $fix->cmid
+            ? get_string($node->incourse ? 'fixlinkquiz' : 'fixaddandlink', 'block_mappingtracker', $fix->name)
+            : get_string('fixaddtocourse', 'block_mappingtracker');
+        $url = new moodle_url('/blocks/mappingtracker/view.php', ['courseid' => $courseid, 'action' => 'fix',
+            'competencyid' => $node->competency->id, 'cmid' => $fix->cmid, 'sesskey' => sesskey()]);
+        return html_writer::link($url, $label, ['class' => 'btn btn-sm btn-outline-primary mt-1 me-1 mr-1']);
     }
 }

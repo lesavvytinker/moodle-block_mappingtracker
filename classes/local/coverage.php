@@ -119,11 +119,14 @@ class coverage {
         $counthidden = (bool) get_config('block_mappingtracker', 'counthidden');
         $countcourses = array_fill_keys(array_map('intval', $countcourseids), true);
         $othercourses = [];
+        $questions = self::question_overview($courseid);
 
         foreach ($units as $unitid => $unit) {
-            $totals = (object) ['items' => 0, 'met' => 0, 'under' => 0, 'missing' => 0];
+            $totals = (object) ['items' => 0, 'met' => 0, 'under' => 0, 'missing' => 0, 'warnings' => 0];
             foreach ($unit->nodes as $id => $node) {
                 $node->incourse = isset($incourse[$id]);
+                self::add_questions($node, $questions[$id] ?? null, $courseid);
+                $totals->warnings += count($node->fixes) + $node->unusedquestions;
                 [$node->target, $node->targetsource] = self::target_for($node, $targets);
                 $node->suggested = self::suggested_target($node->competency);
                 $node->activities = [];
@@ -180,6 +183,198 @@ class coverage {
         }
         uasort($units, fn($a, $b) => strcmp($a->competency->shortname, $b->competency->shortname));
         return $units;
+    }
+
+    /**
+     * Coverage across a category: each course's own coverage of each unit (its own activities only), and each unit's
+     * combined coverage across every course in the category that delivers it, so a unit split across courses reads
+     * as covered when its courses cover it between them.
+     *
+     * @param int $categoryid
+     * @param bool $subcategories
+     * @return \stdClass courses: courseid => {course, units: unitid => {totals}}, units: unitid => {competency,
+     *     framework, courses: courseid[], totals}
+     */
+    public static function for_category(int $categoryid, bool $subcategories = true): \stdClass {
+        global $DB;
+        $path = $DB->get_field('course_categories', 'path', ['id' => $categoryid], MUST_EXIST);
+        $where = 'c.category = :cat';
+        $params = ['cat' => $categoryid];
+        if ($subcategories) {
+            $where = '(' . $where . ' OR ' . $DB->sql_like('cc.path', ':path') . ')';
+            $params['path'] = $path . '/%';
+        }
+        $courses = $DB->get_records_sql("SELECT c.id, c.fullname, c.shortname, c.visible, c.category, c.enddate
+                                           FROM {course} c
+                                           JOIN {course_categories} cc ON cc.id = c.category
+                                          WHERE $where
+                                       ORDER BY cc.sortorder, c.sortorder", $params);
+        $result = (object) ['courses' => [], 'units' => []];
+        $combined = [];
+        foreach ($courses as $course) {
+            // Own activities only: no other course is searched or counted here.
+            $units = self::for_course((int) $course->id, [], []);
+            if (!$units) {
+                continue;
+            }
+            $outside = self::questions_outside_units((int) $course->id, $units);
+            $result->courses[$course->id] = (object) ['course' => $course, 'units' => [],
+                'outsidewarnings' => array_sum(array_map(fn($n) => count($n->fixes) + $n->unusedquestions, $outside))];
+            foreach ($units as $unitid => $unit) {
+                $result->courses[$course->id]->units[$unitid] = (object) ['totals' => $unit->totals];
+                $result->units[$unitid] ??= (object) ['competency' => $unit->competency, 'framework' => $unit->framework,
+                    'courses' => [], 'warnings' => 0];
+                $result->units[$unitid]->courses[] = (int) $course->id;
+                $result->units[$unitid]->warnings += $unit->totals->warnings;
+                foreach ($unit->nodes as $id => $node) {
+                    $combined[$unitid][$id] ??= ['target' => $node->target, 'count' => 0];
+                    $combined[$unitid][$id]['count'] += $node->count;
+                }
+            }
+        }
+        foreach ($result->units as $unitid => $unit) {
+            $totals = (object) ['items' => 0, 'met' => 0, 'under' => 0, 'missing' => 0, 'warnings' => $unit->warnings];
+            foreach ($combined[$unitid] as $item) {
+                $status = self::status($item['count'], $item['target']);
+                if ($status !== self::NOTARGET) {
+                    $totals->items++;
+                    $totals->$status++;
+                }
+            }
+            $unit->totals = $totals;
+        }
+        uasort($result->units, fn($a, $b) => strcmp($a->competency->shortname, $b->competency->shortname));
+        return $result;
+    }
+
+    /**
+     * Whether question mappings (the Question competencies plugin, qbank_competencies) are available.
+     *
+     * @return bool
+     */
+    public static function questions_available(): bool {
+        if (!class_exists('\\qbank_competencies\\local\\api') || !get_config('qbank_competencies', 'version')) {
+            return false;
+        }
+        return !class_exists('\\core\\plugininfo\\qbank') || \core\plugininfo\qbank::is_plugin_enabled('qbank_competencies');
+    }
+
+    /**
+     * The course's question mappings, from the Question competencies plugin.
+     *
+     * @param int $courseid
+     * @return array competencyid => overview (see qbank_competencies' get_course_overview()), or [] without the plugin
+     */
+    public static function question_overview(int $courseid): array {
+        if (!self::questions_available()) {
+            return [];
+        }
+        try {
+            return \qbank_competencies\local\api::get_course_overview($courseid);
+        } catch (\Throwable $e) {
+            debugging('Mapping tracker could not read question mappings: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            return [];
+        }
+    }
+
+    /**
+     * Competencies that questions in the course are mapped to but that belong to no unit the course delivers.
+     *
+     * @param int $courseid
+     * @param \stdClass[] $units From {@see for_course()}
+     * @return \stdClass[] node-like objects: competency, incourse, questions, fixes, unusedquestions
+     */
+    public static function questions_outside_units(int $courseid, array $units): array {
+        global $DB;
+        $inunits = [];
+        foreach ($units as $unit) {
+            $inunits += $unit->nodes;
+        }
+        $outside = [];
+        foreach (self::question_overview($courseid) as $competencyid => $overview) {
+            if (isset($inunits[$competencyid])) {
+                continue;
+            }
+            $competency = $DB->get_record('competency', ['id' => $competencyid]);
+            if (!$competency) {
+                continue;
+            }
+            $node = (object) ['competency' => $competency, 'incourse' => (bool) $overview->incourse, 'children' => []];
+            self::add_questions($node, $overview, $courseid);
+            $outside[$competencyid] = $node;
+        }
+        return $outside;
+    }
+
+    /**
+     * Give a node its mapped questions, the quizzes that use them, and what needs fixing: quizzes that use a question
+     * mapped to the item but don't have the item in their competency settings, and the item missing from the course.
+     * Questions never count towards a target.
+     *
+     * @param \stdClass $node
+     * @param \stdClass|null $overview From {@see question_overview()}
+     * @param int $courseid
+     */
+    private static function add_questions(\stdClass $node, ?\stdClass $overview, int $courseid): void {
+        $node->questions = [];
+        $node->fixes = [];
+        $node->unusedquestions = 0;
+        if (!$overview) {
+            return;
+        }
+        foreach ($overview->questions as $question) {
+            $quizzes = [];
+            foreach ($question->quizzes as $quiz) {
+                $activity = self::activity($courseid, (int) $quiz->cmid);
+                if (!$activity) {
+                    continue;
+                }
+                $activity->random = (bool) $quiz->random;
+                $activity->linked = (bool) $quiz->linked;
+                $quizzes[] = $activity;
+                if (!$quiz->linked) {
+                    $node->fixes[(int) $quiz->cmid] = (object) ['cmid' => (int) $quiz->cmid, 'name' => $activity->name,
+                        'url' => $activity->url];
+                }
+            }
+            $context = \context::instance_by_id((int) $question->contextid, IGNORE_MISSING);
+            $node->questions[] = (object) [
+                'name' => format_string($question->name),
+                'previewurl' => ($context && $question->questionid)
+                    ? \qbank_competencies\local\api::preview_url((int) $question->questionid, $context)->out(false) : null,
+                'editurl' => $question->questionid
+                    ? \qbank_competencies\local\api::edit_url((int) $question->questionid)->out(false) : null,
+                'quizzes' => $quizzes,
+                'unused' => !$quizzes,
+                'random' => $quizzes && !array_filter($quizzes, fn($q) => !$q->random),
+            ];
+            $node->unusedquestions += (int) !$quizzes;
+        }
+        $node->fixes = array_values($node->fixes);
+        // Mapped questions, but the item isn't one of the course's competencies: nothing can be linked to it yet.
+        if (!$node->incourse && $node->questions && !$node->fixes) {
+            $node->fixes[] = (object) ['cmid' => 0, 'name' => null, 'url' => null];
+        }
+    }
+
+    /**
+     * Fix a flag: add the item to the course's competencies if needed, then to the quiz's.
+     *
+     * @param int $courseid
+     * @param int $competencyid
+     * @param int $cmid 0 to only add the item to the course
+     */
+    public static function fix(int $courseid, int $competencyid, int $cmid): void {
+        global $DB;
+        if (!$DB->record_exists('competency_coursecomp', ['courseid' => $courseid, 'competencyid' => $competencyid])) {
+            \core_competency\api::add_competency_to_course($courseid, $competencyid);
+        }
+        if ($cmid) {
+            $cm = get_coursemodule_from_id('', $cmid, $courseid, false, MUST_EXIST);
+            if (!$DB->record_exists('competency_modulecomp', ['cmid' => $cm->id, 'competencyid' => $competencyid])) {
+                \core_competency\api::add_competency_to_course_module($cm, $competencyid);
+            }
+        }
     }
 
     /**

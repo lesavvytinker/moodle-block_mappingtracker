@@ -35,6 +35,7 @@ require_login($course);
 $context = context_course::instance($courseid);
 require_capability('block/mappingtracker:view', $context);
 $cansettargets = has_capability('block/mappingtracker:settargets', context_system::instance());
+$canfix = has_capability('moodle/competency:coursecompetencymanage', $context);
 
 $url = new moodle_url('/blocks/mappingtracker/view.php', ['courseid' => $courseid]);
 $PAGE->set_url($url);
@@ -55,6 +56,21 @@ if ($action === 'settarget' && $cansettargets && confirm_sesskey()) {
     redirect(
         new moodle_url($url, [], 'item-' . $competencyid),
         get_string('targetsaved', 'block_mappingtracker'),
+        null,
+        \core\output\notification::NOTIFY_SUCCESS
+    );
+}
+
+if ($action === 'fix' && $canfix && confirm_sesskey()) {
+    $competencyid = required_param('competencyid', PARAM_INT);
+    $cmid = optional_param('cmid', 0, PARAM_INT);
+    if (!$DB->record_exists('competency', ['id' => $competencyid])) {
+        throw new moodle_exception('invalidrecord', 'error', '', 'competency');
+    }
+    coverage::fix($courseid, $competencyid, $cmid);
+    redirect(
+        new moodle_url($url, [], 'item-' . $competencyid),
+        get_string($cmid ? 'fixedlinked' : 'fixedadded', 'block_mappingtracker'),
         null,
         \core\output\notification::NOTIFY_SUCCESS
     );
@@ -85,6 +101,14 @@ $where = $searchcategories === null ? get_string('searchanywhere', 'block_mappin
         ? $searchcategory : $course->category, MUST_EXIST, true)->get_formatted_name() .
         ((int) ($config->subcategories ?? 1) ? ' ' . get_string('andsubcategories', 'block_mappingtracker') : '');
 echo html_writer::tag('p', get_string('lookingin', 'block_mappingtracker', $where), ['class' => 'small text-muted mb-1']);
+$categorycontext = context_coursecat::instance($course->category);
+if (has_capability('block/mappingtracker:viewcategory', $categorycontext)) {
+    echo html_writer::tag('p', html_writer::link(
+        new moodle_url('/blocks/mappingtracker/category.php', ['categoryid' => $course->category]),
+        get_string('viewcategoryof', 'block_mappingtracker', core_course_category::get($course->category, MUST_EXIST, true)
+            ->get_formatted_name())
+    ), ['class' => 'small mb-1']);
+}
 if ($countcourses) {
     $names = array_map(fn($id) => format_string((string) $DB->get_field('course', 'fullname', ['id' => $id])), $countcourses);
     echo html_writer::tag(
@@ -92,6 +116,43 @@ if ($countcourses) {
         get_string('countingfrom', 'block_mappingtracker', implode(', ', array_filter($names))),
         ['class' => 'small text-muted']
     );
+}
+
+// Everything to fix, at the top.
+$outside = coverage::questions_outside_units($courseid, $units);
+$fixrows = [];
+$allnodes = array_values($outside);
+foreach ($units as $unit) {
+    $allnodes = array_merge($allnodes, array_values($unit->nodes));
+}
+foreach ($allnodes as $node) {
+    foreach ($node->fixes as $fix) {
+        $what = $fix->cmid ? get_string($node->incourse ? 'fixwhatlink' : 'fixwhataddlink', 'block_mappingtracker', $fix->name)
+            : get_string('fixwhatadd', 'block_mappingtracker');
+        $fixrows[] = [html_writer::link(
+            new moodle_url($url, [], 'item-' . $node->competency->id),
+            s(display::name($node))
+        ), $what, $canfix ? display::fix_button($courseid, $node, $fix) : ''];
+    }
+    foreach ($node->questions as $question) {
+        if ($question->unused) {
+            $fixrows[] = [html_writer::link(
+                new moodle_url($url, [], 'item-' . $node->competency->id),
+                s(display::name($node))
+            ), get_string('fixwhatunused', 'block_mappingtracker', $question->name), ''];
+        }
+    }
+}
+if ($fixrows) {
+    echo html_writer::start_div('alert alert-warning', ['id' => 'fixes']);
+    echo $OUTPUT->heading(get_string('warningsheader', 'block_mappingtracker', count($fixrows)), 4);
+    echo html_writer::tag('p', get_string('fixesintro', 'block_mappingtracker'), ['class' => 'small']);
+    $fixtable = new html_table();
+    $fixtable->attributes['class'] = 'generaltable mb-0';
+    $fixtable->head = [get_string('item', 'block_mappingtracker'), get_string('fixwhat', 'block_mappingtracker'), ''];
+    $fixtable->data = $fixrows;
+    echo html_writer::table($fixtable);
+    echo html_writer::end_div();
 }
 
 $sourcelabels = [
@@ -136,6 +197,9 @@ foreach ($units as $unitid => $unit) {
         }
         $cell = html_writer::div($name, '', ['style' => 'padding-left: ' . ($node->depth * 1.25) . 'rem']);
 
+        if (!$node->count && $node->questions && !$node->children) {
+            $name .= html_writer::div(get_string('questionsonly', 'block_mappingtracker'), 'small text-danger');
+        }
         $mapped = display::activities($node->activities);
         foreach ($node->elsewhere as $other) {
             $mapped .= html_writer::div(get_string(
@@ -144,6 +208,12 @@ foreach ($units as $unitid => $unit) {
                 html_writer::link(new moodle_url('/course/view.php', ['id' => $other->course->id]), $other->course->fullname)
             ) .
                 display::activities($other->activities, $other->counted), 'small text-muted mt-1 block_mappingtracker-elsewhere');
+        }
+        $mapped .= display::questions($node);
+        if ($canfix) {
+            foreach ($node->fixes as $fix) {
+                $mapped .= display::fix_button($courseid, $node, $fix);
+            }
         }
 
         $target = $node->target === null ? '' : (string) $node->target;
@@ -188,6 +258,33 @@ foreach ($units as $unitid => $unit) {
     echo html_writer::end_div();
 }
 
+// Questions mapped to competencies outside the units this course delivers.
+if ($outside) {
+    echo html_writer::start_div('mb-5', ['id' => 'outside']);
+    echo $OUTPUT->heading(get_string('outsideunits', 'block_mappingtracker'), 3);
+    echo html_writer::tag('p', get_string('outsideunitsintro', 'block_mappingtracker'), ['class' => 'small']);
+    $table = new html_table();
+    $table->attributes['class'] = 'generaltable';
+    $table->head = [get_string('item', 'block_mappingtracker'), get_string('questions', 'block_mappingtracker')];
+    foreach ($outside as $id => $node) {
+        $buttons = '';
+        foreach ($canfix ? $node->fixes : [] as $fix) {
+            $buttons .= display::fix_button($courseid, $node, $fix);
+        }
+        $row = new html_table_row([s(display::name($node)) . ($node->incourse ? '' : html_writer::div(
+            get_string('notincourse', 'block_mappingtracker'),
+            'small text-danger'
+        )), display::questions($node) . $buttons]);
+        $row->id = 'item-' . $id;
+        $table->data[] = $row;
+    }
+    echo html_writer::table($table);
+    echo html_writer::end_div();
+}
+
+if ($canfix && coverage::questions_available()) {
+    echo html_writer::tag('p', get_string('questionsnote', 'block_mappingtracker'), ['class' => 'small text-muted']);
+}
 if (core_component::get_component_directory('report_evidencereporter')) {
     echo html_writer::tag('p', get_string('evidencereporter', 'block_mappingtracker'), ['class' => 'small text-muted']);
 }

@@ -44,6 +44,13 @@ $capabilities = [
             'manager' => CAP_ALLOW,
         ],
     ],
+    'block/mappingtracker:viewcategory' => [
+        'captype' => 'read',
+        'contextlevel' => CONTEXT_COURSECAT,
+        'archetypes' => [
+            'manager' => CAP_ALLOW,
+        ],
+    ],
     'block/mappingtracker:settargets' => [
         'riskbitmask' => RISK_CONFIG,
         'captype' => 'write',

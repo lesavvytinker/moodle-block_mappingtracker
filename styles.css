@@ -31,3 +31,8 @@
     white-space: nowrap;
     width: 11rem;
 }
+
+.block_mappingtracker-table td:first-child {
+    min-width: 16rem;
+    width: 32%;
+}

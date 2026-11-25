@@ -108,7 +108,7 @@ final class coverage_test extends \advanced_testcase {
         $this->assertNull($nodes[$d['e1']->get('id')]->target);
         $this->assertEquals((object) ['items' => 2, 'met' => 1], $nodes[$d['e1']->get('id')]->childtotals);
         $this->assertEquals(
-            (object) ['items' => 3, 'met' => 2, 'under' => 0, 'missing' => 1],
+            (object) ['items' => 3, 'met' => 2, 'under' => 0, 'missing' => 1, 'warnings' => 0],
             $units[$d['u1']->get('id')]->totals
         );
         $this->assertSame([$d['pc12']->get('id')], array_map(
@@ -275,5 +275,92 @@ final class coverage_test extends \advanced_testcase {
         $counted = $pc12([(int) $d['b']->id], $default);
         $this->assertTrue($counted->elsewhere[0]->counted);
         $this->assertSame(coverage::MET, $counted->status);
+    }
+
+    /**
+     * Mapped questions: listed under their items, never counted, flagged when their quiz isn't linked or they're in no
+     * quiz, and fixed in one go; competencies outside the course's units are listed too.
+     */
+    public function test_questions(): void {
+        global $CFG, $DB;
+        if (!coverage::questions_available()) {
+            $this->markTestSkipped('Needs the Question competencies plugin (qbank_competencies).');
+        }
+        require_once($CFG->dirroot . '/mod/quiz/locallib.php');
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $d = $this->setup_data();
+        $gen = $this->getDataGenerator();
+        $a = (int) $d['a']->id;
+        $u1 = $d['u1']->get('id');
+        $quiz = $gen->create_module('quiz', ['course' => $a, 'name' => 'Knowledge quiz']);
+        $qgen = $gen->get_plugin_generator('core_question');
+        $category = $qgen->create_question_category(['contextid' => \context_module::instance($quiz->cmid)->id]);
+        $inquiz = $qgen->create_question('truefalse', null, ['category' => $category->id, 'name' => 'Copyright basics']);
+        $spare = $qgen->create_question('truefalse', null, ['category' => $category->id, 'name' => 'Spare question']);
+        quiz_add_quiz_question($inquiz->id, $DB->get_record('quiz', ['id' => $quiz->id]));
+        $api = '\qbank_competencies\local\api';
+        $other = $gen->get_plugin_generator('core_competency')->create_competency([
+            'competencyframeworkid' => $d['u1']->get('competencyframeworkid'), 'shortname' => 'U3 Elsewhere',
+            'idnumber' => 'U3']);
+        $api::set_competencies($api::get_entryid($inquiz->id), [(int) $d['pc11']->get('id'), (int) $other->get('id')]);
+        $api::set_competencies($api::get_entryid($spare->id), [(int) $d['pe1']->get('id')]);
+
+        $units = coverage::for_course($a);
+        $pc11 = $units[$u1]->nodes[$d['pc11']->get('id')];
+        $this->assertSame(1, $pc11->count, 'Questions never count.');
+        $this->assertSame('Copyright basics', $pc11->questions[0]->name);
+        $this->assertFalse($pc11->questions[0]->quizzes[0]->linked);
+        $this->assertCount(1, $pc11->fixes);
+        $this->assertSame((int) $quiz->cmid, $pc11->fixes[0]->cmid);
+        $pe1 = $units[$u1]->nodes[$d['pe1']->get('id')];
+        $this->assertTrue($pe1->questions[0]->unused);
+        $this->assertSame(1, $pe1->unusedquestions);
+        $this->assertSame(2, $units[$u1]->totals->warnings);
+        $this->assertStringContainsString('⚠ 3 to fix', display::block($a, $units));
+
+        // A competency outside the course's units, and not in the course.
+        $outside = coverage::questions_outside_units($a, $units);
+        $this->assertSame([(int) $other->get('id')], array_keys($outside));
+        $this->assertFalse($outside[$other->get('id')]->incourse);
+        $this->assertSame((int) $quiz->cmid, $outside[$other->get('id')]->fixes[0]->cmid);
+
+        // Fixing links the quiz (adding the competency to the course first where needed).
+        coverage::fix($a, (int) $d['pc11']->get('id'), (int) $quiz->cmid);
+        coverage::fix($a, (int) $other->get('id'), (int) $quiz->cmid);
+        $this->assertTrue($DB->record_exists('competency_coursecomp', ['courseid' => $a, 'competencyid' => $other->get('id')]));
+        $units = coverage::for_course($a);
+        $pc11 = $units[$u1]->nodes[$d['pc11']->get('id')];
+        $this->assertSame([], $pc11->fixes);
+        $this->assertSame(2, $pc11->count, 'The linked quiz now counts, as an activity.');
+        $this->assertSame(1, $units[$u1]->totals->warnings);
+    }
+
+    /**
+     * A category: each course's own coverage, and units combined across the courses that deliver them.
+     */
+    public function test_for_category(): void {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $d = $this->setup_data();
+        $gen = $this->getDataGenerator();
+        $term = $gen->create_category(['name' => 'Term 1']);
+        $sub = $gen->create_category(['name' => 'RPL', 'parent' => $term->id]);
+        move_courses([$d['a']->id], $term->id);
+        move_courses([$d['b']->id], $sub->id);
+        $u1 = $d['u1']->get('id');
+
+        $all = coverage::for_category((int) $term->id);
+        $this->assertEqualsCanonicalizing([(int) $d['a']->id, (int) $d['b']->id], array_keys($all->courses));
+        $this->assertSame([(int) $d['a']->id, (int) $d['b']->id], $all->units[$u1]->courses);
+        // Course A misses 1.2; course B (the RPL course) maps it: met between them.
+        $this->assertSame(2, $all->courses[$d['a']->id]->units[$u1]->totals->met);
+        $this->assertSame(1, $all->courses[$d['b']->id]->units[$u1]->totals->met);
+        $this->assertSame(3, $all->units[$u1]->totals->met);
+        $this->assertSame(0, $all->units[$u1]->totals->missing);
+
+        $termonly = coverage::for_category((int) $term->id, false);
+        $this->assertSame([(int) $d['a']->id], array_keys($termonly->courses));
+        $this->assertSame(1, $termonly->units[$u1]->totals->missing);
     }
 }
