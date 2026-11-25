@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 (2026-11-26)
+- Mapped questions now also come from **Question Bank Competency Mapping** (`qbank_comp_ext`, on the Moodle
+  Marketplace), as well as Question competencies. Either or both can be installed. A question mapped on any version
+  counts as mapped, so editing a question doesn't lose it.
+
 ## 0.3.0 (2026-11-25)
 - **Mapped questions** (with Question competencies, `qbank_competencies`): listed under each item with the quizzes they're
   in, and flagged when the quiz isn't linked to the item, when they're in no quiz, or when they're only drawn at random.

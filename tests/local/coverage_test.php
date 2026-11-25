@@ -20,6 +20,7 @@ namespace block_mappingtracker\local;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(coverage::class)]
 #[\PHPUnit\Framework\Attributes\CoversClass(display::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(question_mappings::class)]
 /**
  * Tests for mapping coverage.
  *
@@ -28,6 +29,7 @@ namespace block_mappingtracker\local;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  * @covers     \block_mappingtracker\local\coverage
  * @covers     \block_mappingtracker\local\display
+ * @covers     \block_mappingtracker\local\question_mappings
  */
 final class coverage_test extends \advanced_testcase {
     /**
@@ -282,9 +284,49 @@ final class coverage_test extends \advanced_testcase {
      * quiz, and fixed in one go; competencies outside the course's units are listed too.
      */
     public function test_questions(): void {
+        $this->check_questions(question_mappings::QBANK_COMPETENCIES);
+    }
+
+    /**
+     * The same, with Question Bank Competency Mapping (qbank_comp_ext) holding the mappings, on a question that has been
+     * edited since it was mapped.
+     */
+    public function test_questions_qbank_comp_ext(): void {
+        $this->check_questions(question_mappings::QBANK_COMP_EXT);
+    }
+
+    /**
+     * Map a question to competencies with one of the mapping plugins.
+     *
+     * @param string $source Component
+     * @param \stdClass $question
+     * @param int[] $competencyids
+     * @param int $courseid
+     */
+    private function map(string $source, \stdClass $question, array $competencyids, int $courseid): void {
+        global $DB;
+        foreach ($competencyids as $competencyid) {
+            if ($source === question_mappings::QBANK_COMPETENCIES) {
+                \qbank_competencies\local\api::add_competency(
+                    (int) $DB->get_field('question_versions', 'questionbankentryid', ['questionid' => $question->id]),
+                    $competencyid
+                );
+            } else {
+                $DB->insert_record('qbank_comp_ext_qmap', ['courseid' => $courseid, 'questionid' => $question->id,
+                    'competencyid' => $competencyid, 'timecreated' => time()]);
+            }
+        }
+    }
+
+    /**
+     * Mapped questions, with the given mapping plugin.
+     *
+     * @param string $source Component
+     */
+    private function check_questions(string $source): void {
         global $CFG, $DB;
-        if (!coverage::questions_available()) {
-            $this->markTestSkipped('Needs the Question competencies plugin (qbank_competencies).');
+        if (!in_array($source, question_mappings::get_sources())) {
+            $this->markTestSkipped('Needs ' . $source . '.');
         }
         require_once($CFG->dirroot . '/mod/quiz/locallib.php');
         $this->resetAfterTest();
@@ -299,12 +341,15 @@ final class coverage_test extends \advanced_testcase {
         $inquiz = $qgen->create_question('truefalse', null, ['category' => $category->id, 'name' => 'Copyright basics']);
         $spare = $qgen->create_question('truefalse', null, ['category' => $category->id, 'name' => 'Spare question']);
         quiz_add_quiz_question($inquiz->id, $DB->get_record('quiz', ['id' => $quiz->id]));
-        $api = '\qbank_competencies\local\api';
         $other = $gen->get_plugin_generator('core_competency')->create_competency([
             'competencyframeworkid' => $d['u1']->get('competencyframeworkid'), 'shortname' => 'U3 Elsewhere',
             'idnumber' => 'U3']);
-        $api::set_competencies($api::get_entryid($inquiz->id), [(int) $d['pc11']->get('id'), (int) $other->get('id')]);
-        $api::set_competencies($api::get_entryid($spare->id), [(int) $d['pe1']->get('id')]);
+        $this->map($source, $inquiz, [(int) $d['pc11']->get('id'), (int) $other->get('id')], $a);
+        $this->map($source, $spare, [(int) $d['pe1']->get('id')], $a);
+        if ($source === question_mappings::QBANK_COMP_EXT) {
+            // Mapped on version 1 only: the edited question (version 2) still counts as mapped.
+            $qgen->update_question($inquiz, null, ['name' => 'Copyright basics']);
+        }
 
         $units = coverage::for_course($a);
         $pc11 = $units[$u1]->nodes[$d['pc11']->get('id')];

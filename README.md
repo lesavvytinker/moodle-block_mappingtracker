@@ -26,8 +26,9 @@ Moodle links competencies to whole activities, so one instance of mapping is one
 
 ## Mapped questions
 
-With **Question competencies** (`qbank_competencies`, Moodle 5.0+) installed, questions mapped to competencies in the
-question bank are listed under each item on the full mapping page: the question (with a preview link), the quizzes it's
+With a plugin that maps questions to competencies installed (**Question competencies**, `qbank_competencies`, Moodle
+5.0+, or **Question Bank Competency Mapping**, `qbank_comp_ext`, Moodle 4.5+; or both), questions mapped to competencies
+in the question bank are listed under each item on the full mapping page: the question (with a preview link), the quizzes it's
 in, and flags:
 
 - **Quiz not linked**: a quiz uses the question but doesn't have the item in its own competency settings, so the quiz
@@ -84,8 +85,8 @@ whether hidden activities count (on by default, since courses are usually built 
 
 ## Requirements
 
-Moodle 4.5 to 5.2, with competencies enabled. Mapped questions need Question competencies (`qbank_competencies`),
-which needs Moodle 5.0 or later; without it, everything else works.
+Moodle 4.5 to 5.2, with competencies enabled. Mapped questions need Question competencies (`qbank_competencies`,
+Moodle 5.0+) or Question Bank Competency Mapping (`qbank_comp_ext`, Moodle 4.5+); without either, everything else works.
 
 ## Licence
 

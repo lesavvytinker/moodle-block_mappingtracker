@@ -248,29 +248,27 @@ class coverage {
     }
 
     /**
-     * Whether question mappings (the Question competencies plugin, qbank_competencies) are available.
+     * Whether question mappings are available (Question competencies or Question Bank Competency Mapping installed).
      *
      * @return bool
      */
     public static function questions_available(): bool {
-        if (!class_exists('\\qbank_competencies\\local\\api') || !get_config('qbank_competencies', 'version')) {
-            return false;
-        }
-        return !class_exists('\\core\\plugininfo\\qbank') || \core\plugininfo\qbank::is_plugin_enabled('qbank_competencies');
+        return question_mappings::is_available();
     }
 
     /**
-     * The course's question mappings, from the Question competencies plugin.
+     * The course's question mappings.
      *
      * @param int $courseid
-     * @return array competencyid => overview (see qbank_competencies' get_course_overview()), or [] without the plugin
+     * @return array competencyid => overview (see {@see question_mappings::get_course_overview()}), or [] without a
+     *               mapping plugin
      */
     public static function question_overview(int $courseid): array {
         if (!self::questions_available()) {
             return [];
         }
         try {
-            return \qbank_competencies\local\api::get_course_overview($courseid);
+            return question_mappings::get_course_overview($courseid);
         } catch (\Throwable $e) {
             debugging('Mapping tracker could not read question mappings: ' . $e->getMessage(), DEBUG_DEVELOPER);
             return [];
@@ -341,9 +339,7 @@ class coverage {
             $node->questions[] = (object) [
                 'name' => format_string($question->name),
                 'previewurl' => ($context && $question->questionid)
-                    ? \qbank_competencies\local\api::preview_url((int) $question->questionid, $context)->out(false) : null,
-                'editurl' => $question->questionid
-                    ? \qbank_competencies\local\api::edit_url((int) $question->questionid)->out(false) : null,
+                    ? question_mappings::preview_url((int) $question->questionid, $context)->out(false) : null,
                 'quizzes' => $quizzes,
                 'unused' => !$quizzes,
                 'random' => $quizzes && !array_filter($quizzes, fn($q) => !$q->random),
